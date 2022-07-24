@@ -433,11 +433,11 @@ async def InGame_Go(channel: str, ch: disnake.Thread, embed2=None):
 	c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={x}")
 	cards = c.fetchone()[0]
 	if cards > 0:
-		c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{channel}'")
 		userLen = await InGame_GetUserLen(channel)
 		if embed2:
 			await ch.send(embed=embed2)
-		if c.fetchone()[0] < userLen:
+		c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{channel}'")
+		if c.fetchone()[0] < userLen-1:
 			embed = disnake.Embed(
 				title=f"👤 {u.name}님의 차례에요!",
 				color=0x59bfff
@@ -452,12 +452,7 @@ async def InGame_Go(channel: str, ch: disnake.Thread, embed2=None):
 			c.execute(f"UPDATE InGame SET msg={msg.id} WHERE channel='{channel}'")
 		else:
 			c.execute(f"DELETE FROM InGameCard WHERE channel='{channel}")
-			for x in range(userLen):
-				c.execute(f"SELECT user{n+1} FROM InGame WHERE channel='{channel}'")
-				c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={c.fetchone()[0]}")
-				if c.fetchone()[0] > 0:
-					c.execute(f"UPDATE InGameEnd SET user{userLen}={user},ended=ended+1 WHERE channel='{channel}'")
-					break
+			c.execute(f"UPDATE InGameEnd SET user{userLen}={x},ended=ended+1 WHERE channel='{channel}'")
 			await InGame_Ranking(channel, ch)
 		await msgInfo.delete()
 	else:
@@ -626,9 +621,10 @@ class InGame_CardLenBtnConfirm(disnake.ui.Button):
 		c.execute(f"SELECT cards FROM InGameCard WHERE channel='{self._channel}' AND user={i.user.id}")
 		cards = c.fetchone()[0]
 		if cards <= 0:
-			c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{self._channel}' AND user={i.user.id}")
+			c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{self._channel}'")
 			ended = c.fetchone()[0]
-			c.execute(f"UPDATE InGameEnd SET user{ended+1}={i.user.id},ended=ended+1 WHERE channel={self._channel}")
+			c.execute(f"UPDATE InGameEnd SET user{ended+1}={i.user.id},ended=ended+1 WHERE channel='{self._channel}'")
+			c.execute(f"UPDATE InGame SET last=now WHERE channel='{self._channel}'")
 			embed.color = 0xffd700
 			embed.description = f"{embed.description}\n\n{i.user.mention}님이 게임을 끝냈어요! :tada:"
 		await InGame_Go(self._channel, i.channel, embed)
