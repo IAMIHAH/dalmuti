@@ -19,7 +19,7 @@ class Lobby(commands.Cog):
 					title="달무티 시작하기",
 					description="📖 처음이신가요? `/가이드`를 확인해보세요."
 				)
-				await i.response.send_message(embed=embed, view=Lobby_Controller(i.channel.type == disnake.ChannelType.private, self.bot), ephemeral=True)
+				await i.response.send_message(embed=embed, view=Lobby_Controller(i.channel.type == disnake.ChannelType.private), ephemeral=True)
 			else:
 				await i.response.send_message(embed=makeErrorEmbed("스레드에서 로비창을 띄울 수 없어요!"), ephemeral=True)
 		else:

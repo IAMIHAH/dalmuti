@@ -1,8 +1,206 @@
-import random
-import sqlite3, disnake
-from disnake.ext import commands
+import random, sqlite3, disnake
 from Module.Embed import makeErrorEmbed
-from pyjosa.josa import Josa
+from Module.User import getUser
+
+async def OutGame_GetUserList(channel: str):
+	user = sqlite3.connect("GameChannel.db", isolation_level=None)
+	u = user.cursor()
+	u.execute(f"SELECT admin FROM Game WHERE channel='{channel}'")
+	admin = u.fetchone()[0]
+	user = sqlite3.connect("User.db", isolation_level=None)
+	u = user.cursor()
+	u.execute(f"SELECT id FROM User WHERE channel='{channel}'")
+	users = []
+	for x in u.fetchall():
+		if x[0] != admin:
+			users.append(f"{x[0]}")
+	return users
+
+async def OutGame_RefreshInfoMsg(channel: str):
+	game = sqlite3.connect("GameChannel.db", isolation_level=None)
+	g = game.cursor()
+	g.execute(f"SELECT user,u_limit,type,admin FROM Game WHERE channel='{channel}'")
+	user, lm, gameChannelType, admin = g.fetchone()
+	userList = await OutGame_GetUserList(channel)
+	embed = disnake.Embed(
+		title="🎮 새로운 게임이 생성되었어요.",
+		description=f"채널 타입: `공개`\n채널 코드: `{channel}`" if gameChannelType == 1 else f"채널 타입: `비공개`"
+	)
+	users = '<@!' + '>\n<@!'.join(userList) + '>' if len(userList) > 0 else ''
+	embed.add_field(name="참여 인원", value=f"{user} / {lm} 명\n\n__[방장]__ <@!{admin}>\n{users}", inline=False)
+	return embed
+
+class OutGame_ChannelSetting(disnake.ui.Modal):
+	def __init__(self, channel: str):
+		components = [
+			disnake.ui.TextInput(
+				placeholder="4 ~ 8",
+				label="최대 인원",
+				custom_id="players",
+				style=disnake.TextInputStyle.short,
+				required=True,
+				max_length=1
+			)
+		]
+		super().__init__(
+			title=f"{channel} 채널 설정",
+			components=components,
+			custom_id=channel
+		)
+	
+	async def callback(self, i: disnake.ModalInteraction):
+		players = int(i.text_values['players'])
+		if players > 8 and players < 4:
+			await i.response.send_message(embed=makeErrorEmbed("인원은 4~8명까지 설정 가능해요."), ephemeral=True)
+			return
+		game = sqlite3.connect("GameChannel.db", isolation_level=None)
+		g = game.cursor()
+		g.execute(f"SELECT user FROM Game WHERE channel='{i.custom_id}'")
+		user = g.fetchone()[0]
+		if user > players:
+			await i.response.send_message(embed=makeErrorEmbed("현재 인원보다 최대 인원을 적게 설정할 수 없어요."), ephemeral=True)
+			return
+		g.execute(f"UPDATE Game SET u_limit={players} WHERE channel='{i.custom_id}'")
+		await i.response.send_message("인원 설정 완료!", ephemeral=True)
+		g.execute(f"SELECT info FROM Game WHERE channel='{i.custom_id}'")
+		info = g.fetchone()[0]
+		infomsg = await i.channel.parent.fetch_message(info)
+		await infomsg.edit(embed=await OutGame_RefreshInfoMsg(i.custom_id))
+
+class OutGame_btnJoinExit(disnake.ui.Button['OutGame_Controller']):
+	def __init__(self, channel: str):
+		self._channel = channel
+		super().__init__(label="입·퇴장", style=disnake.ButtonStyle.red, row=1)
+
+	async def callback(self, i: disnake.Interaction):
+		if getUser(i.user.id):
+			await i.response.defer(with_message=True, ephemeral=True)
+			conn = sqlite3.connect("User.db", isolation_level=None)
+			c = conn.cursor()
+			c.execute(f"SELECT channel FROM User WHERE id={i.user.id}")
+			n = c.fetchone()
+			game = sqlite3.connect("GameChannel.db", isolation_level=None)
+			g = game.cursor()
+			g.execute(f"SELECT info,user,u_limit,admin FROM Game WHERE channel='{self._channel}'")
+			infoNew, user, lm, admin = g.fetchone()
+			if user >= lm:
+				await i.edit_original_message(embed=makeErrorEmbed("인원이 꽉 찼어요."))
+				return
+			if n:
+				if n[0] == self._channel:
+					if admin == i.user.id: # TODO 방장이 퇴장하는 경우 (일단 못나감)
+						await i.edit_original_message(embed=makeErrorEmbed("방장은 방에서 퇴장할 수 없어요."))
+						return
+					c.execute(f"UPDATE User SET channel=null WHERE id={i.user.id}")
+					await i.channel.remove_user(i.user)
+					g.execute(f"UPDATE Game SET user=user-1 WHERE channel='{self._channel}'")
+					infomsgNew = await i.channel.parent.fetch_message(infoNew)
+					await infomsgNew.edit(embed=await OutGame_RefreshInfoMsg(self._channel))
+					await i.edit_original_message(embed=disnake.Embed(title="✅ 퇴장 완료!", description="퇴장을 완료했어요."))
+					return
+				elif n[0]:
+					g.execute(f"SELECT thread,info FROM Game WHERE channel='{n[0]}'")
+					try:
+						thid, info = g.fetchone()
+						th : disnake.Thread = await i.guild.fetch_channel(thid)
+						try:
+							await th.remove_user(i.user)
+						except disnake.errors.HTTPException as e:
+							if "Thread is archived" in e:
+								pass
+						#infomsgNew = self.bot.get_message(info)
+						infomsg = await i.channel.parent.fetch_message(info)
+						await infomsg.edit(embed=await OutGame_RefreshInfoMsg(n[0]))
+						#infomsg = await i.user.fetch_message(g.fetchone()[1])
+						#await infomsg.edit(embed=await OutGame_RefreshInfoMsg(n[0]))
+						# TODO 이전 채널이 다른 서버인 경우 처리
+						g.execute(f"UPDATE Game SET user=user-1 WHERE channel='{n[0]}'")
+					except disnake.errors.NotFound:
+						g.execute(f"DELETE FROM Game WHERE channel='{n[0]}'")
+						c.execute(f"UPDATE User SET channel=null WHERE channel='{n[0]}'")
+					except TypeError:
+						c.execute(f"UPDATE User SET channel=null WHERE channel='{n[0]}'")
+			g.execute(f"UPDATE Game SET user=user+1 WHERE channel='{self._channel}'")
+			await i.channel.add_user(i.user)
+			c.execute(f"UPDATE User SET channel='{self._channel}' WHERE id={i.user.id}")
+			infomsgNew = await i.channel.parent.fetch_message(infoNew)
+			await infomsgNew.edit(embed=await OutGame_RefreshInfoMsg(self._channel))
+			await i.edit_original_message(embed=disnake.Embed(title="✅ 입장 완료!", description="입장을 완료했어요."))
+		else:
+			await i.response.send_message(embed=makeErrorEmbed("`/가입`을 먼저 진행해주세요!"), ephemeral=True)
+
+class OutGame_Controller(disnake.ui.View):
+	def __init__(self, channel: str):
+		super().__init__(timeout=None)
+		self._channel = channel
+		self.add_item(OutGame_btnJoinExit(channel))
+
+	@disnake.ui.button(label="채널 설정", style=disnake.ButtonStyle.green, row=2)
+	async def btnChannelEdit(self, btn: disnake.Button, i: disnake.Interaction):
+		conn = sqlite3.connect("GameChannel.db", isolation_level=None)
+		c = conn.cursor()
+		c.execute(f"SELECT admin FROM Game WHERE channel='{self._channel}'")
+		if c.fetchone()[0] == i.user.id:
+			await i.response.send_modal(OutGame_ChannelSetting(self._channel))
+		else:
+			await i.response.send_message(embed=makeErrorEmbed("권한이 없어요."), ephemeral=True)
+
+	@disnake.ui.button(label="게임 시작", style=disnake.ButtonStyle.blurple, row=2)
+	async def btnGameStart(self, btn: disnake.Button, i: disnake.Interaction):
+		game = sqlite3.connect("GameChannel.db", isolation_level=None)
+		g = game.cursor()
+		g.execute(f"SELECT user,admin FROM Game WHERE channel='{self._channel}'")
+		user, admin = g.fetchone()
+		if admin == i.user.id:
+			if user < 4:
+				await i.response.send_message(embed=makeErrorEmbed("인원이 부족해요.\n최소 시작 인원: 4명"), ephemeral=True)
+				return
+			else:
+				await i.response.send_message("게임을 시작할게요!", ephemeral=True)
+				await InGame_Start(self._channel, i.channel)
+				self.stop()
+		else:
+			await i.response.send_message(embed=makeErrorEmbed("권한이 없어요."), ephemeral=True)
+
+	@disnake.ui.button(label="채널 삭제", style=disnake.ButtonStyle.red, row=2)
+	async def btnRemoveChannel(self, btn: disnake.Button, i: disnake.Interaction):
+		conn = sqlite3.connect("GameChannel.db", isolation_level=None)
+		c = conn.cursor()
+		c.execute(f"SELECT admin FROM Game WHERE channel='{self._channel}'")
+		if c.fetchone()[0] == i.user.id:
+			user = sqlite3.connect("User.db", isolation_level=None)
+			u = user.cursor()
+			u.execute(f"UPDATE User SET channel=null WHERE channel='{self._channel}'")
+			c.execute(f"DELETE FROM Game WHERE channel='{self._channel}'")
+			await i.response.send_message("달무티 채널을 삭제했어요.\n\n서버 관리자 외에 접근이 불가능하고\n서버 관리자가 삭제하지 않는 한 기록을 볼 수 있어요.")
+			await i.channel.edit(archived=True, locked=True)
+			self.stop()
+		else:
+			await i.response.send_message(embed=makeErrorEmbed("권한이 없어요."), ephemeral=True)
+	
+	@disnake.ui.button(label="새 메시지 보내기", style=disnake.ButtonStyle.gray, row=3)
+	async def btnNewMsg(self, btn: disnake.Button, i: disnake.Interaction):
+		conn = sqlite3.connect("GameChannel.db", isolation_level=None)
+		c = conn.cursor()
+		c.execute(f"SELECT admin,controller FROM Game WHERE channel='{self._channel}'")
+		n = c.fetchone()
+		if n[0] == i.user.id:
+			msg = await i.channel.send(view=OutGame_Controller(self._channel))
+			c.execute(f"UPDATE Game SET controller={msg.id} WHERE channel='{self._channel}'")
+			msg = await i.channel.fetch_message(n[1])
+			await msg.delete()
+			await i.response.send_message("갱신 완료!", ephemeral=True)
+			self.stop()
+		else:
+			await i.response.send_message(embed=makeErrorEmbed("권한이 없어요."), ephemeral=True)
+
+# ===================================================== #
+# ===================== OUT GAME ====================== #
+# ===================================================== #
+
+# ===================================================== #
+# ====================== IN GAME ====================== #
+# ===================================================== #
 
 async def InGame_GetUserList(channel: str) -> list:
 	user = sqlite3.connect("User.db", isolation_level=None)
@@ -34,6 +232,8 @@ async def InGame_Start(channel: str, ch: disnake.Thread):
 	cards.append(13)
 	cards.append(13)
 
+	cards = [1,2,3,4,5,6,7,8,9,10,11,12]
+
 	user_card = {}
 	for x in users: # 순서 지정
 		user_card[f'{x}'] = cards.pop(random.randint(0, len(cards)-1))
@@ -56,26 +256,30 @@ async def InGame_Start(channel: str, ch: disnake.Thread):
 	conn = sqlite3.connect("InGame.db", isolation_level=None)
 	c = conn.cursor()
 	c.execute(f"INSERT INTO InGame(channel, msg) VALUES('{channel}', {msg.id})")
+	c.execute(f"INSERT INTO InGameEnd(channel) VALUES('{channel}')")
 	for x in range(0, len(cardUser)):
 		c.execute(f"UPDATE InGame SET user{x+1}={cardUser[x]} WHERE channel='{channel}'")
 	
-	card_len = 80-len(user_card)
+	card_len = 12-len(user_card)
 	giveCard = card_len/len(user_card)
+	mention = []
 	for x in users: # 카드 배분
 		c.execute(f"INSERT INTO InGameCard(channel, user) VALUES('{channel}', {x})")
 		c.execute(f"UPDATE InGameCard SET card{user_card[f'{x}']}=card{user_card[f'{x}']}+1,cards=cards+1 WHERE channel='{channel}' AND user={x}")
 		for a in range(int(giveCard)):
 			ca = cards.pop(random.randint(0, len(cards)-1))
 			c.execute(f"UPDATE InGameCard SET card{ca}=card{ca}+1,cards=cards+1 WHERE channel='{channel}' AND user={x}")
-	for x in user_card:
+	for x in dict(sorted(user_card.items(), key = lambda item: item[1], reverse = True)):
 		if len(cards) > 0: # 카드가 남으면
 			ca = cards.pop(random.randint(0, len(cards)-1))
 			c.execute(f"UPDATE InGameCard SET card{ca}=card{ca}+1,cards=cards+1 WHERE channel='{channel}' AND user={x}")
+	for x in user_card:
 		u = await ch.guild.fetch_member(int(x))
 		c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={x}")
 		embed.add_field(name=f"{u.name}", value=f"카드 ×{c.fetchone()[0]}")
+		mention.append(u.mention)
 	await msg.delete()
-	msg = await ch.send(embed=embed, view=InGame_Controller(channel))
+	msg = await ch.send(content=f"{mention[0]} {mention[1]}", embed=embed, view=InGame_Controller(channel))
 	c.execute(f"UPDATE InGame SET msg={msg.id},now=-1 WHERE channel='{channel}'")
 
 class InGame_MyCardSelect(disnake.ui.Select):
@@ -221,27 +425,65 @@ async def InGame_Go(channel: str, ch: disnake.Thread, embed2=None):
 	c = conn.cursor()
 	c.execute(f"SELECT now,msg FROM InGame WHERE channel='{channel}'")
 	now, mid = c.fetchone()
-	msg = await ch.fetch_message(mid)
-	await msg.edit(content="<a:Loading:898561786540875887> 게임을 진행중이에요.\n잠시만 기다려주세요!", embed=None, view=None)
+	msgInfo = await ch.fetch_message(mid)
+	await msgInfo.edit(content="<a:Loading:898561786540875887> 게임을 진행중이에요.\n잠시만 기다려주세요!", embed=None, view=None)
 	c.execute(f"SELECT user{now} FROM InGame WHERE channel='{channel}'")
 	x = c.fetchone()[0]
 	u = await ch.guild.fetch_member(int(x))
 	c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={x}")
+	cards = c.fetchone()[0]
+	if cards > 0:
+		c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{channel}'")
+		userLen = await InGame_GetUserLen(channel)
+		if embed2:
+			await ch.send(embed=embed2)
+		if c.fetchone()[0] < userLen:
+			embed = disnake.Embed(
+				title=f"👤 {u.name}님의 차례에요!",
+				color=0x59bfff
+			)
+			for n in range(userLen):
+				c.execute(f"SELECT user{n+1} FROM InGame WHERE channel='{channel}'")
+				user = c.fetchone()[0]
+				us = await ch.guild.fetch_member(int(user))
+				c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={user}")
+				embed.add_field(name=f"{us.name}", value=f"카드 ×{c.fetchone()[0]}")
+			msg = await ch.send(content=f"{u.mention}", embed=embed, view=InGame_Controller(channel))
+			c.execute(f"UPDATE InGame SET msg={msg.id} WHERE channel='{channel}'")
+		else:
+			c.execute(f"DELETE FROM InGameCard WHERE channel='{channel}")
+			for x in range(userLen):
+				c.execute(f"SELECT user{n+1} FROM InGame WHERE channel='{channel}'")
+				c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={c.fetchone()[0]}")
+				if c.fetchone()[0] > 0:
+					c.execute(f"UPDATE InGameEnd SET user{userLen}={user},ended=ended+1 WHERE channel='{channel}'")
+					break
+			await InGame_Ranking(channel, ch)
+		await msgInfo.delete()
+	else:
+		c.execute(f"SELECT now FROM InGame WHERE channel='{channel}'")
+		now = c.fetchone()[0]
+		c.execute(f"UPDATE InGame SET now=now+1,last={now+1} WHERE channel='{channel}'")
+		if now+1 > await InGame_GetUserLen(channel):
+			c.execute(f"UPDATE InGame SET now=1,last=1 WHERE channel='{channel}'")
+		await InGame_Go(channel, ch, embed2)
+
+async def InGame_Ranking(channel: str, ch: disnake.Thread):
+	conn = sqlite3.connect("InGame.db", isolation_level=None)
+	c = conn.cursor()
+	rank = [ ]
+	userLen = await InGame_GetUserLen(channel)
 	embed = disnake.Embed(
-		title=f"👤 {u.name}님의 차례에요!",
-		color=0x59bfff
+		title="👑 게임 종료!"
 	)
-	for n in range(await InGame_GetUserLen(channel)):
-		c.execute(f"SELECT user{n+1} FROM InGame WHERE channel='{channel}'")
-		user = c.fetchone()[0]
-		u = await ch.guild.fetch_member(int(user))
-		c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={user}")
-		embed.add_field(name=f"{u.name}", value=f"카드 ×{c.fetchone()[0]}")
-	await msg.delete()
-	if embed2:
-		await ch.send(embed=embed2)
-	msg = await ch.send(content=f"{u.mention}", embed=embed, view=InGame_Controller(channel))
-	c.execute(f"UPDATE InGame SET msg={msg.id} WHERE channel='{channel}'")
+	for x in range(userLen):
+		c.execute(f"SELECT user{x+1} FROM InGameEnd WHERE channel='{channel}'")
+		user = await ch.guild.fetch_member(c.fetchone()[0])
+		rank.append(user.id)
+		embed.add_field(name=f"{x+1}위", value=f"{user.mention}")
+		c.execute(f"UPDATE InGame SET user{x+1}={user.id} WHERE channel='{channel}'")
+	await ch.send(embed=embed)
+	await ch.send(view=OutGame_Controller(channel))
 
 class InGame_MyCardView(disnake.ui.View):
 	def __init__(self, options: list[disnake.SelectOption], selectOption: str=None, options2=None):
@@ -375,9 +617,20 @@ class InGame_CardLenBtnConfirm(disnake.ui.Button):
 		embed = disnake.Embed(
 			description=f"{i.user.mention}님이 [{cardEmoji[self._card-1]} {cardName[self._card-1]}] {self._cardLen}장을 냈어요!"
 		)
+		if self._card == 1:
+			c.execute(f"UPDATE InGame SET now={self._now},last={self._now} WHERE channel='{self._channel}'")
+			embed.description = f"{embed.description}\n더 이상 계급이 높은 카드가 없어서 자동으로 패스할게요!"
 		if joker > 0:
 			embed.description = f"{i.user.mention}님이 [{cardEmoji[self._card-1]} {cardName[self._card-1]}] {self._cardLen+joker}(`{self._cardLen}`+`{joker}`)장을 냈어요!"
 		await i.response.edit_message(embed=embed, view=None)
+		c.execute(f"SELECT cards FROM InGameCard WHERE channel='{self._channel}' AND user={i.user.id}")
+		cards = c.fetchone()[0]
+		if cards <= 0:
+			c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{self._channel}' AND user={i.user.id}")
+			ended = c.fetchone()[0]
+			c.execute(f"UPDATE InGameEnd SET user{ended+1}={i.user.id},ended=ended+1 WHERE channel={self._channel}")
+			embed.color = 0xffd700
+			embed.description = f"{embed.description}\n\n{i.user.mention}님이 게임을 끝냈어요! :tada:"
 		await InGame_Go(self._channel, i.channel, embed)
 
 class InGame_CardLenBtnPass(disnake.ui.Button):

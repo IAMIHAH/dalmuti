@@ -1,16 +1,13 @@
-import sqlite3
-import disnake, random, string
-
-from Module.OutGame import OutGame_Controller
+import sqlite3, disnake, random, string
+from Module.InGame import OutGame_Controller
 
 class Lobby_MakeBtn(disnake.ui.Button['Lobby_Controller']):
-	def __init__(self, btn, public, bot):
+	def __init__(self, btn, public):
 		if btn:
 			label = "공개 게임 생성하기"
 		else:
 			label = "비공개 게임 생성하기"
 		self._public = btn
-		self.bot = bot
 		super().__init__(label=label, disabled=not public, style=disnake.ButtonStyle.blurple)
 
 	async def callback(self, i: disnake.Interaction):
@@ -25,10 +22,10 @@ class Lobby_MakeBtn(disnake.ui.Button['Lobby_Controller']):
 				await i.response.send_message(embed=embed, view=Lobby_MakeBtn_Premium(self.bot), ephemeral=True)
 				return
 			else:
-				th = await Lobby_MakeNewThread(i.user, i.channel, True, self.bot)
+				th = await Lobby_MakeNewThread(i.user, i.channel, True)
 				await i.response.send_message(f"생성이 완료되었습니다!\n{th.mention}", ephemeral=True)
 
-async def Lobby_MakeNewThread(user: disnake.Member, channel: disnake.TextChannel, public: bool, bot):
+async def Lobby_MakeNewThread(user: disnake.Member, channel: disnake.TextChannel, public: bool):
 	channelId = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
 	embed = disnake.Embed(
 		title="🎮 새로운 게임이 생성되었어요.",
@@ -53,7 +50,7 @@ async def Lobby_MakeNewThread(user: disnake.Member, channel: disnake.TextChannel
 	c = conn.cursor()
 	c.execute(f"UPDATE User SET channel='{channelId}' WHERE id={user.id}")
 	conn.close()
-	controller = await th.send(view=OutGame_Controller(channelId, bot))
+	controller = await th.send(view=OutGame_Controller(channelId))
 	conn = sqlite3.connect("GameChannel.db", isolation_level=None)
 	c = conn.cursor()
 	gameChannelType = 1 if public else 2
@@ -110,15 +107,15 @@ class Lobby_JoinBtn(disnake.ui.Button['Lobby_Controller']):
 		pass # TODO 입장하기
 
 class Lobby_Controller(disnake.ui.View):
-	def __init__(self, dm: bool = False, bot=None):
+	def __init__(self, dm: bool = False):
 		super().__init__(timeout=None)
 		if dm:
-			self.add_item(Lobby_MakeBtn(True, True, bot))
-			self.add_item(Lobby_MakeBtn(False, False, bot))
+			self.add_item(Lobby_MakeBtn(True, True))
+			self.add_item(Lobby_MakeBtn(False, False))
 			self.add_item(Lobby_JoinBtn(True, True))
 			self.add_item(Lobby_JoinBtn(False, False))
 		else:
-			self.add_item(Lobby_MakeBtn(True, False, bot))
-			self.add_item(Lobby_MakeBtn(False, True, bot))
+			self.add_item(Lobby_MakeBtn(True, False))
+			self.add_item(Lobby_MakeBtn(False, True))
 			self.add_item(Lobby_JoinBtn(True, False))
 			self.add_item(Lobby_JoinBtn(False, True))
