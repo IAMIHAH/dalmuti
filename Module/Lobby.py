@@ -1,4 +1,5 @@
 import sqlite3, disnake, random, string
+from tkinter import TRUE
 from Module.InGame import OutGame_Controller
 
 class Lobby_MakeBtn(disnake.ui.Button['Lobby_Controller']):
@@ -19,7 +20,7 @@ class Lobby_MakeBtn(disnake.ui.Button['Lobby_Controller']):
 					title="<:thread:949580585398046740> 스레드 공개 여부 설정",
 					description="이 서버는 스레드 공개 여부를 설정할 수 있어요.\n스레드를 공개할까요?\n\n스레드를 공개한다면 서버원의 참여가 쉬워져요.\n다만, 정해진 사람들끼리 하고 싶다면 공개하지 않는 것을 추천드려요!"
 				)
-				await i.response.send_message(embed=embed, view=Lobby_MakeBtn_Premium(self.bot), ephemeral=True)
+				await i.response.send_message(embed=embed, view=Lobby_MakeBtn_Premium(), ephemeral=True)
 				return
 			else:
 				th = await Lobby_MakeNewThread(i.user, i.channel, True)
@@ -60,17 +61,16 @@ async def Lobby_MakeNewThread(user: disnake.Member, channel: disnake.TextChannel
 	return th
 
 class Lobby_MakeBtn_Premium(disnake.ui.View):
-	def __init__(self, bot):
+	def __init__(self):
 		super().__init__()
-		self.bot = bot
 	
 	@disnake.ui.button(label="공개", style=disnake.ButtonStyle.green)
 	async def btnPublic(self, btn: disnake.Button, i: disnake.Interaction):
-		await Lobby_MakeNewThread(i.user, i.channel, True, self.bot)
+		await Lobby_MakeNewThread(i.user, i.channel, True)
 	
 	@disnake.ui.button(label="비공개", style=disnake.ButtonStyle.red)
 	async def btnPrivate(self, btn: disnake.Button, i: disnake.Interaction):
-		await Lobby_MakeNewThread(i.user, i.channel, False, self.bot)
+		await Lobby_MakeNewThread(i.user, i.channel, False)
 
 class Lobby_JoinChannel_Private(disnake.ui.Modal):
 	def __init__(self):

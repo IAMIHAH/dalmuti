@@ -1,3 +1,4 @@
+from email import message
 import random, sqlite3, disnake
 from Module.Embed import makeErrorEmbed
 from Module.User import getUser
@@ -99,6 +100,10 @@ class OutGame_btnJoinExit(disnake.ui.Button['OutGame_Controller']):
 					await i.edit_original_message(embed=disnake.Embed(title="✅ 퇴장 완료!", description="퇴장을 완료했어요."))
 					return
 				elif n[0]:
+					try:
+						g.execute(f"DELETE FROM InGameEnd WHERE channel='{n[0]}'")
+					except:
+						pass
 					g.execute(f"SELECT thread,info FROM Game WHERE channel='{n[0]}'")
 					try:
 						thid, info = g.fetchone()
@@ -219,6 +224,8 @@ async def InGame_GetUserLen(channel: str) -> int:
 	return user
 
 async def InGame_Start(channel: str, ch: disnake.Thread):
+	conn = sqlite3.connect("InGame.db", isolation_level=None)
+	c = conn.cursor()
 	msg = await ch.send("게임을 초기화하고 있어요.\n잠시만 기다려주세요!")
 	users = await InGame_GetUserList(channel)
 	embed = disnake.Embed(
@@ -232,40 +239,57 @@ async def InGame_Start(channel: str, ch: disnake.Thread):
 	cards.append(13)
 	cards.append(13)
 
-	cards = [1,2,3,4,5,6,7,8,9,10,11,12]
+	#cards = [1,2,3,4,5,6,7,8,9,10,11,12]
+	cards_num = len(cards)
 
 	user_card = {}
-	for x in users: # 순서 지정
-		user_card[f'{x}'] = cards.pop(random.randint(0, len(cards)-1))
-		for a in user_card:
-			if int(x) != int(a):
-				while user_card[a] == user_card[f'{x}']:
-					cards.append(user_card[f'{x}'])
-					user_card[f'{x}'] = cards.pop(random.randint(0, len(cards)-1))
-	user_card = dict(sorted(user_card.items(), key = lambda item: item[1]))
-	cardUser = list(user_card.keys())
+	c.execute(f"SELECT * FROM InGameEnd WHERE channel='{channel}'")
+	endgame = c.fetchone()
+	newGame = True if endgame == None or endgame[0] == None else False
 	embedCard = disnake.Embed(
 		title="👑 순서 정하기 결과",
 		color=0xffda00
 	)
-	for x in user_card:
-		u = await ch.guild.fetch_member(x)
-		embedCard.add_field(name=f"{u.name}", value=f"{user_card[f'{x}']}")
+	if newGame:
+		for x in users: # 순서 지정
+			user_card[f'{x}'] = cards.pop(random.randint(0, len(cards)-1))
+			for a in user_card:
+				if int(x) != int(a):
+					while user_card[a] == user_card[f'{x}']:
+						cards.append(user_card[f'{x}'])
+						user_card[f'{x}'] = cards.pop(random.randint(0, len(cards)-1))
+		user_card = dict(sorted(user_card.items(), key = lambda item: item[1]))
+		cardUser = list(user_card.keys())
+		for x in user_card:
+			u = await ch.guild.fetch_member(x)
+			embedCard.add_field(name=f"{u.name}", value=f"{cardEmoji[user_card[f'{x}']-1]}")
+		giveCard = (cards_num-len(user_card))/len(user_card)
+	else:
+		cardUser = []
+		tmp = 0
+		for x in endgame[2:]:
+			if x != None:
+				tmp += 1
+				u = await ch.guild.fetch_member(x)
+				embedCard.add_field(name=f"{u.name}", value=f"이전 {tmp}위")
+				cardUser.append(x)
+				user_card[f'{x}'] = tmp
+		user_card = dict(sorted(user_card.items(), key = lambda item: item[1]))
+		giveCard = cards_num/len(user_card)
 	await ch.send(embed=embedCard)
 
-	conn = sqlite3.connect("InGame.db", isolation_level=None)
-	c = conn.cursor()
 	c.execute(f"INSERT INTO InGame(channel, msg) VALUES('{channel}', {msg.id})")
+	if not newGame:
+		c.execute(f"DELETE FROM InGameEnd WHERE channel='{channel}'")
 	c.execute(f"INSERT INTO InGameEnd(channel) VALUES('{channel}')")
 	for x in range(0, len(cardUser)):
 		c.execute(f"UPDATE InGame SET user{x+1}={cardUser[x]} WHERE channel='{channel}'")
 	
-	card_len = 12-len(user_card)
-	giveCard = card_len/len(user_card)
 	mention = []
 	for x in users: # 카드 배분
 		c.execute(f"INSERT INTO InGameCard(channel, user) VALUES('{channel}', {x})")
-		c.execute(f"UPDATE InGameCard SET card{user_card[f'{x}']}=card{user_card[f'{x}']}+1,cards=cards+1 WHERE channel='{channel}' AND user={x}")
+		if newGame:
+			c.execute(f"UPDATE InGameCard SET card{user_card[f'{x}']}=card{user_card[f'{x}']}+1,cards=cards+1 WHERE channel='{channel}' AND user={x}")
 		for a in range(int(giveCard)):
 			ca = cards.pop(random.randint(0, len(cards)-1))
 			c.execute(f"UPDATE InGameCard SET card{ca}=card{ca}+1,cards=cards+1 WHERE channel='{channel}' AND user={x}")
@@ -281,6 +305,7 @@ async def InGame_Start(channel: str, ch: disnake.Thread):
 	await msg.delete()
 	msg = await ch.send(content=f"{mention[0]} {mention[1]}", embed=embed, view=InGame_Controller(channel))
 	c.execute(f"UPDATE InGame SET msg={msg.id},now=-1 WHERE channel='{channel}'")
+
 
 class InGame_MyCardSelect(disnake.ui.Select):
 	def __init__(self, options: list[disnake.SelectOption], selectOption: str=None, placeholder: str="내 카드 목록", options2=None):
@@ -451,16 +476,16 @@ async def InGame_Go(channel: str, ch: disnake.Thread, embed2=None):
 			msg = await ch.send(content=f"{u.mention}", embed=embed, view=InGame_Controller(channel))
 			c.execute(f"UPDATE InGame SET msg={msg.id} WHERE channel='{channel}'")
 		else:
-			c.execute(f"DELETE FROM InGameCard WHERE channel='{channel}")
+			c.execute(f"DELETE FROM InGameCard WHERE channel='{channel}'")
 			c.execute(f"UPDATE InGameEnd SET user{userLen}={x},ended=ended+1 WHERE channel='{channel}'")
 			await InGame_Ranking(channel, ch)
 		await msgInfo.delete()
 	else:
 		c.execute(f"SELECT now FROM InGame WHERE channel='{channel}'")
 		now = c.fetchone()[0]
-		c.execute(f"UPDATE InGame SET now=now+1,last={now+1} WHERE channel='{channel}'")
+		c.execute(f"UPDATE InGame SET now=now+1 WHERE channel='{channel}'")
 		if now+1 > await InGame_GetUserLen(channel):
-			c.execute(f"UPDATE InGame SET now=1,last=1 WHERE channel='{channel}'")
+			c.execute(f"UPDATE InGame SET now=1 WHERE channel='{channel}'")
 		await InGame_Go(channel, ch, embed2)
 
 async def InGame_Ranking(channel: str, ch: disnake.Thread):
@@ -477,6 +502,7 @@ async def InGame_Ranking(channel: str, ch: disnake.Thread):
 		rank.append(user.id)
 		embed.add_field(name=f"{x+1}위", value=f"{user.mention}")
 		c.execute(f"UPDATE InGame SET user{x+1}={user.id} WHERE channel='{channel}'")
+	c.execute(f"DELETE FROM InGame WHERE channel='{channel}'")
 	await ch.send(embed=embed)
 	await ch.send(view=OutGame_Controller(channel))
 
@@ -541,8 +567,7 @@ class InGame_CardLenBtnMinMax(disnake.ui.Button):
 			joker = 0
 		cardLenP = cardLen
 		if joker > 0:
-			cardLenP = f"{cardLen}(`{cardLen}`+★`{joker}`)"
-			cardLen += joker
+			cardLenP = f"{cardLen}(`{cardLen-joker}`+★`{joker}`)"
 		embed = disnake.Embed(
 			title="카드 개수 정하기",
 			description=f"정말 [{cardEmoji[self._card-1]} {cardName[self._card-1]}] {cardLenP}장을 내시겠어요?"
@@ -624,6 +649,8 @@ class InGame_CardLenBtnConfirm(disnake.ui.Button):
 			c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{self._channel}'")
 			ended = c.fetchone()[0]
 			c.execute(f"UPDATE InGameEnd SET user{ended+1}={i.user.id},ended=ended+1 WHERE channel='{self._channel}'")
+			if self._card == 1:
+				c.execute(f"UPDATE InGame SET now={int(self._now)+1},last={int(self._now)+1} WHERE channel='{self._channel}'")
 			c.execute(f"UPDATE InGame SET last=now WHERE channel='{self._channel}'")
 			embed.color = 0xffd700
 			embed.description = f"{embed.description}\n\n{i.user.mention}님이 게임을 끝냈어요! :tada:"
