@@ -457,8 +457,26 @@ async def InGame_Go(channel: str, ch: disnake.Thread, embed2=None):
 	u = await ch.guild.fetch_member(int(x))
 	c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={x}")
 	cards = c.fetchone()[0]
+	userLen = await InGame_GetUserLen(channel)
+	c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{channel}' AND user={x}")
+	if cards <= 0 and c.fetchone()[0]+1 < userLen:
+		c.execute(f"UPDATE InGame SET now={now+1 if now+1 <= userLen else 1} WHERE channel='{channel}'")
+		await InGame_Go(channel, ch, embed2)
+		return
+	c.execute(f"SELECT last FROM InGame WHERE channel='{channel}'")
+	c.execute(f"SELECT user{c.fetchone()[0]} FROM InGame WHERE channel='{channel}'")
+	c.execute(f"SELECT cards FROM InGameCard WHERE channel='{channel}' AND user={c.fetchone()[0]}")
+	if c.fetchone()[0] == 0:
+		c.execute(f"UPDATE InGame SET last={now} WHERE channel='{channel}'")
+	c.execute(f"SELECT last FROM InGame WHERE channel='{channel}'")
+	lastUser = c.fetchone()[0]
 	if cards > 0:
-		userLen = await InGame_GetUserLen(channel)
+		c.execute(f"SELECT card_len FROM InGame WHERE channel='{channel}'")
+		cardLen = c.fetchone()[0]
+		if cardLen > cards and lastUser != now:
+			c.execute(f"UPDATE InGame SET now={now+1 if now+1 <= userLen else 1} WHERE channel='{channel}'")
+			await InGame_Go(channel, ch, embed2)
+			return
 		if embed2:
 			await ch.send(embed=embed2)
 		c.execute(f"SELECT ended FROM InGameEnd WHERE channel='{channel}'")
@@ -637,7 +655,7 @@ class InGame_CardLenBtnConfirm(disnake.ui.Button):
 		embed = disnake.Embed(
 			description=f"{i.user.mention}님이 [{cardEmoji[self._card-1]} {cardName[self._card-1]}] {self._cardLen}장을 냈어요!"
 		)
-		if self._card == 1:
+		if self._cardLen+joker >= self._card:
 			c.execute(f"UPDATE InGame SET now={self._now},last={self._now} WHERE channel='{self._channel}'")
 			embed.description = f"{embed.description}\n더 이상 계급이 높은 카드가 없어서 자동으로 패스할게요!"
 		if joker > 0:
